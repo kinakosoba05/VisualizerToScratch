@@ -2,4 +2,4 @@
 
 https://scratch.mit.edu/projects/1335654737/ と https://scratch.mit.edu/projects/1337926195/ で使う道具です。
 
-あるGemini 3.5 FlasとあるGemini 3.1 Proが作ってくれました。
+あるGemini 3.5 FlashとあるGemini 3.1 Proが作ってくれました。
