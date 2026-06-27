@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>VisualizerToScratch v4.2</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #eef2f7; color: #333; }
+        .box { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-width: 650px; margin: 0 auto; text-align: center; }
+        .setting-group { text-align: left; background: #f5f7fa; padding: 15px; border-radius: 8px; margin: 15px 0; border: 1px solid #ddd; }
+        .setting-item { margin: 10px 0; display: flex; justify-content: space-between; align-items: center; }
+        .setting-item input { width: 100px; padding: 5px; border: 1px solid #ccc; border-radius: 4px; text-align: right; }
+        .btn-start { width: 100%; padding: 14px; background: #2980b9; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 16px; margin-top: 10px; }
+        .btn-start:hover { background: #2471a3; }
+        .btn-start:disabled { background: #bdc3c7; cursor: not-allowed; }
+        #status { font-weight: bold; margin: 15px 0; }
+        .info { text-align: left; background: #e8f4f8; padding: 10px; border-radius: 5px; font-size: 13px; margin: 10px 0; border-left: 4px solid #2980b9; }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <h2>🎛️ Scratch用 フーリエ変換プロツール (V4.2 最終形態)</h2>
+    <p>パラメータを設定し、音楽ファイルを選択して「開始」を押してください。</p>
+    
+    <div class="setting-group">
+        <strong>⚙️ 解析パラメータ設定</strong>
+        <div class="setting-item">
+            <label>一コマの秒数 (秒):</label>
+            <input type="number" id="paramFrameTime" value="0.03" step="0.001" min="0.001">
+        </div>
+        <div class="setting-item">
+            <label>開始周波数 (Hz):</label>
+            <input type="number" id="paramMinHz" value="10" step="1" min="1">
+        </div>
+        <div class="setting-item">
+            <label>終了周波数 (Hz):</label>
+            <input type="number" id="paramMaxHz" value="6000" step="100" min="1000">
+        </div>
+        <div class="setting-item">
+            <label>バンド分割数 (個):</label>
+            <input type="number" id="paramBands" value="256" step="1" min="1">
+        </div>
+        <div class="setting-item">
+            <label>Scratchでの目標の最大高さ:</label>
+            <input type="number" id="paramTargetMax" value="145" step="1" min="1">
+        </div>
+    </div>
+
+    <input type="file" id="audioFile" accept="audio/*"><br>
+    
+    <button id="startBtn" class="btn-start">大量フーリエ変換を開始</button>
+    
+    <div id="status" style="color: #333;">ファイルを選択してボタンを押してください</div>
+    
+    <div class="info">
+        ★最終形態：ややこしいファイルの事前読み込み判定を廃止し、「手動スタート方式」に変更しました。これでボタンが押せなくなるバグは絶対に起きません！
+    </div>
+</div>
+
+<script>
+function computeFFT(re, im) {
+    const n = re.length;
+    let j = 0;
+    for (let i = 0; i < n - 1; i++) {
+        if (i < j) {
+            let temp = re[i]; re[i] = re[j]; re[j] = temp;
+            temp = im[i]; im[i] = im[j]; im[j] = temp;
+        }
+        let m = n >> 1;
+        while (m >= 1 && j >= m) { j -= m; m >>= 1; }
+        j += m;
+    }
+    for (let size = 2; size <= n; size *= 2) {
+        let halfSize = size / 2;
+        let tabStep = n / size;
+        for (let i = 0; i < n; i += size) {
+            for (let k = i, t = 0; k < i + halfSize; k++, t += tabStep) {
+                let theta = -2 * Math.PI * t / n;
+                let wr = Math.cos(theta);
+                let wi = Math.sin(theta);
+                let pr = re[k + halfSize] * wr - im[k + halfSize] * wi;
+                let pi = re[k + halfSize] * wi + im[k + halfSize] * wr;
+                re[k + halfSize] = re[k] - pr;
+                im[k + halfSize] = im[k] - pi;
+                re[k] += pr;
+                im[k] += pi;
+            }
+        }
+    }
+}
+
+window.onload = function() {
+    const audioFileInput = document.getElementById('audioFile');
+    const startBtn = document.getElementById('startBtn');
+    const statusDiv = document.getElementById('status');
+    
+    const paramFrameTime = document.getElementById('paramFrameTime');
+    const paramMinHz = document.getElementById('paramMinHz');
+    const paramMaxHz = document.getElementById('paramMaxHz');
+    const paramBands = document.getElementById('paramBands');
+    const paramTargetMax = document.getElementById('paramTargetMax');
+
+    // ★ボタンを押した瞬間にファイルを読み込むように全て書き直しました
+    startBtn.addEventListener('click', async function() {
+        const file = audioFileInput.files[0];
+        
+        if (!file) {
+            statusDiv.style.color = "#c0392b";
+            statusDiv.innerText = "⚠️ エラー：先に「ファイルを選択」から音楽ファイルを選んでください！";
+            return;
+        }
+
+        startBtn.disabled = true;
+        statusDiv.style.color = "#ff6600";
+        statusDiv.innerText = "⏳ 1/3: ファイルデータを読み込み中...";
+
+        try {
+            const loadedArrayBuffer = await file.arrayBuffer();
+            const baseFileName = file.name.includes('.') ? file.name.split('.').slice(0, -1).join('.') : file.name;
+
+            statusDiv.innerText = "🔍 2/3: 曲全体の波形をスキャン中...";
+
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const audioBuffer = await audioCtx.decodeAudioData(loadedArrayBuffer.slice(0)); 
+            
+            statusDiv.innerText = "⏳ 3/3: 指定周波数でガチのFFT分解中...";
+
+            const frameTime = parseFloat(paramFrameTime.value) || 0.03;
+            const minHz = parseFloat(paramMinHz.value) || 10;
+            const maxHz = parseFloat(paramMaxHz.value) || 6000;
+            const bandCount = parseInt(paramBands.value) || 256;
+            const targetMax = parseInt(paramTargetMax.value) || 145;
+
+            const sampleRate = audioBuffer.sampleRate;
+            const totalFrames = Math.floor(audioBuffer.duration / frameTime);
+            const channelData = audioBuffer.getChannelData(0);
+            
+            const fftSize = 2048; 
+
+            let rawFrames = [];
+            let globalMaxRaw = 0.0001;
+
+            for (let f = 0; f < totalFrames; f++) {
+                const startSample = Math.floor(f * frameTime * sampleRate);
+                if (startSample + fftSize > channelData.length) break;
+                
+                let re = new Float32Array(fftSize);
+                let im = new Float32Array(fftSize);
+                for (let i = 0; i < fftSize; i++) {
+                    const windowVal = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (fftSize - 1));
+                    re[i] = channelData[startSample + i] * windowVal;
+                    im[i] = 0.0;
+                }
+
+                computeFFT(re, im);
+
+                let spectrum = new Float32Array(fftSize / 2);
+                for (let i = 0; i < fftSize / 2; i++) {
+                    spectrum[i] = Math.sqrt(re[i] * re[i] + im[i] * im[i]);
+                }
+
+                let bands = new Array(bandCount).fill(0);
+                let counts = new Array(bandCount).fill(0);
+                
+                for (let i = 0; i < fftSize / 2; i++) {
+                    const currentHz = (i * sampleRate) / fftSize;
+                    if (currentHz < minHz || currentHz > maxHz) continue;
+                    
+                    const logMin = Math.log2(minHz);
+                    const logMax = Math.log2(maxHz);
+                    const logCurrent = Math.log2(currentHz);
+                    
+                    let bandIdx = Math.floor(((logCurrent - logMin) / (logMax - logMin)) * bandCount);
+                    if (bandIdx < 0) bandIdx = 0;
+                    if (bandIdx > bandCount - 1) bandIdx = bandCount - 1;
+                    
+                    bands[bandIdx] += spectrum[i];
+                    counts[bandIdx]++;
+                }
+                
+                let frameAvgs = [];
+                for(let b = 0; b < bandCount; b++) {
+                    let avg = counts[b] > 0 ? (bands[b] / counts[b]) : 0;
+                    frameAvgs.push(avg);
+                    if (avg > globalMaxRaw) globalMaxRaw = avg;
+                }
+                rawFrames.push(frameAvgs);
+            }
+
+            let preCalculatedMatrix = [];
+            for (let f = 0; f < rawFrames.length; f++) {
+                let frameNums = [];
+                for (let b = 0; b < bandCount; b++) {
+                    let rawVal = rawFrames[f][b];
+                    let norm = rawVal / globalMaxRaw;
+                    if (norm > 1) norm = 1;
+
+                    let boosted = Math.log1p(norm * 1.718) / Math.log1p(1.718); 
+                    let num = Math.round(boosted * targetMax);
+                    
+                    if (b > bandCount / 2) {
+                        num = Math.round(num * (1 + (b - bandCount / 2) * (0.1 / bandCount)));
+                    }
+                    
+                    if (num < 0) num = 0;
+                    if (num > targetMax) num = targetMax;
+                    
+                    frameNums.push(num);
+                }
+                preCalculatedMatrix.push(frameNums);
+            }
+
+            let activeBandIndices = []; 
+            for (let b = 0; b < bandCount; b++) {
+                let isAlwaysZero = true;
+                for (let f = 0; f < preCalculatedMatrix.length; f++) {
+                    if (preCalculatedMatrix[f][b] > 0) {
+                        isAlwaysZero = false; 
+                        break;
+                    }
+                }
+                if (!isAlwaysZero) activeBandIndices.push(b);
+            }
+
+            if (activeBandIndices.length === 0) activeBandIndices.push(0);
+
+            const finalChCount = activeBandIndices.length; 
+
+            let output = [];
+            for (let f = 0; f < preCalculatedMatrix.length; f++) {
+                let lineData = [];
+                for (let i = 0; i < activeBandIndices.length; i++) {
+                    let realBandIdx = activeBandIndices[i];
+                    lineData.push(preCalculatedMatrix[f][realBandIdx]);
+                }
+                
+                // ★ここにあった「lineData.reverse();」を削除しました！
+                
+                output.push(lineData.join('/') + '/');
+            }
+
+            const finalResultText = output.join('\n');
+
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = (now.getMonth() + 1).toString().padStart(2, '0');
+            const date = now.getDate().toString().padStart(2, '0');
+            const timeStr = now.getHours().toString().padStart(2, '0') + 
+                            now.getMinutes().toString().padStart(2, '0') + 
+                            now.getSeconds().toString().padStart(2, '0');
+            
+            const uniqueFileName = `${baseFileName}_RealFFT_Normal_Max${targetMax}_${finalChCount}ch_${year}${month}${date}_${timeStr}.txt`;
+
+            const blob = new Blob([finalResultText], { type: 'text/plain' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = uniqueFileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            statusDiv.style.color = "#27ae60";
+            statusDiv.innerText = `✅ 変換完了！[ ${finalChCount} 分割 ] で保存しました！`;
+        } catch (err) {
+            console.error(err);
+            statusDiv.style.color = "#c0392b";
+            statusDiv.innerText = "❌ エラー：音声データの解析に失敗しました。";
+        } finally {
+            startBtn.disabled = false;
+        }
+    });
+};
+</script>
+
+</body>
+</html>
