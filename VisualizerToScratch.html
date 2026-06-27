@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>VisualizerToScratch</title>
+    <style>
+        body { font-family: sans-serif; padding: 20px; background: #eef2f7; color: #333; }
+        .box { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); max-width: 650px; margin: 0 auto; text-align: center; }
+        .setting-group { text-align: left; background: #f5f7fa; padding: 15px; border-radius: 8px; margin: 15px 0; border: 1px solid #ddd; }
+        .setting-item { margin: 10px 0; display: flex; justify-content: space-between; align-items: center; }
+        .setting-item input { width: 100px; padding: 5px; border: 1px solid #ccc; border-radius: 4px; text-align: right; }
+        .btn-start { width: 100%; padding: 14px; background: #2980b9; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; font-size: 16px; margin-top: 10px; }
+        .btn-start:hover { background: #2471a3; }
+        .btn-start:disabled { background: #bdc3c7; cursor: not-allowed; }
+        #status { font-weight: bold; margin: 15px 0; }
+        .info { text-align: left; background: #e8f4f8; padding: 10px; border-radius: 5px; font-size: 13px; margin: 10px 0; border-left: 4px solid #2980b9; }
+    </style>
+</head>
+<body>
+
+<div class="box">
+    <h2>🎛️ Scratch用 フーリエ変換プロツール (V4 ビジュアライザー反転版)</h2>
+    <p>パラメータを設定してから、音楽ファイルを選択してください。</p>
+    
+    <div class="setting-group">
+        <strong>⚙️ 解析パラメータ設定</strong>
+        <div class="setting-item">
+            <label>一コマの秒数 (秒):</label>
+            <input type="number" id="paramFrameTime" value="0.03" step="0.001" min="0.001">
+        </div>
+        <div class="setting-item">
+            <label>開始周波数 (Hz):</label>
+            <input type="number" id="paramMinHz" value="10" step="1" min="1">
+        </div>
+        <div class="setting-item">
+            <label>終了周波数 (Hz):</label>
+            <input type="number" id="paramMaxHz" value="6000" step="100" min="1000">
+        </div>
+        <div class="setting-item">
+            <label>バンド分割数 (個):</label>
+            <input type="number" id="paramBands" value="256" step="1" min="1">
+        </div>
+        <div class="setting-item">
+            <label>Scratchでの目標の最大高さ:</label>
+            <input type="number" id="paramTargetMax" value="145" step="1" min="1">
+        </div>
+    </div>
+
+    <input type="file" id="audioFile" accept="audio/*"><br>
+    
+    <button id="startBtn" class="btn-start" disabled>大量フーリエ変換を開始</button>
+    
+    <div id="status" style="color: #ff6600;">「ファイルを選択」から音楽ファイルを選んでください</div>
+    
+    <div class="info">
+        ★純粋反転版：ご提示いただいたお気に入りのV4ビジュアライザー計算をベースに、出力する直前で配列を完全に反転（リバース）させました。これによってデータの最初（左側）が低音、データの最後（右側）が高音になります。
+    </div>
+</div>
+
+<script>
+window.onload = function() {
+    const audioFileInput = document.getElementById('audioFile');
+    const startBtn = document.getElementById('startBtn');
+    const statusDiv = document.getElementById('status');
+    
+    const paramFrameTime = document.getElementById('paramFrameTime');
+    const paramMinHz = document.getElementById('paramMinHz');
+    const paramMaxHz = document.getElementById('paramMaxHz');
+    const paramBands = document.getElementById('paramBands');
+    const paramTargetMax = document.getElementById('paramTargetMax');
+
+    let loadedArrayBuffer = null;
+    let baseFileName = "fft_data";
+
+    audioFileInput.addEventListener('change', async function(e) {
+        const file = e.target.files[0];
+        if (!file) {
+            startBtn.disabled = true;
+            statusDiv.style.color = "#ff6600";
+            statusDiv.innerText = "「ファイルを選択」から音楽ファイルを選んでください";
+            return;
+        }
+
+        startBtn.disabled = true;
+        statusDiv.style.color = "#ff6600";
+        statusDiv.innerText = "⏳ ファイルの事前読み込み中...";
+
+        try {
+            loadedArrayBuffer = await file.arrayBuffer();
+            baseFileName = file.name.includes('.') ? file.name.split('.').slice(0, -1).join('.') : file.name;
+
+            statusDiv.style.color = "#27ae60";
+            statusDiv.innerText = `🎵 ファイル「${file.name}」の読み込み完了！いつでも解析を開始できます。`;
+            startBtn.disabled = false; 
+        } catch (err) {
+            console.error(err);
+            statusDiv.style.color = "#c0392b";
+            statusDiv.innerText = "❌ エラー：ファイルの読み込みに失敗しました。";
+        }
+    });
+
+    startBtn.addEventListener('click', async function() {
+        if (!loadedArrayBuffer) return;
+
+        startBtn.disabled = true;
+        statusDiv.style.color = "#ff6600";
+        statusDiv.innerText = "🔍 1/2: 曲全体の最大周波数音量をスキャン中...";
+
+        try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const audioBuffer = await audioCtx.decodeAudioData(loadedArrayBuffer.slice(0)); 
+            
+            statusDiv.innerText = "⏳ 2/2: 指定周波数（10Hz〜6000Hz）で分解中...";
+
+            const frameTime = parseFloat(paramFrameTime.value) || 0.03;
+            const minHz = parseFloat(paramMinHz.value) || 10;
+            const maxHz = parseFloat(paramMaxHz.value) || 6000;
+            const bandCount = parseInt(paramBands.value) || 256;
+            const targetMax = parseInt(paramTargetMax.value) || 145;
+
+            const sampleRate = audioBuffer.sampleRate;
+            const totalFrames = Math.floor(audioBuffer.duration / frameTime);
+            const channelData = audioBuffer.getChannelData(0);
+            
+            // 本格的なFFT解像度
+            const fftSize = 2048; 
+
+            // 事前に全フレームの各バンドのエネルギーを記録するための配列
+            let rawFrames = [];
+            let globalMaxRaw = 0.0001;
+
+            for (let f = 0; f < totalFrames; f++) {
+                const startSample = Math.floor(f * frameTime * sampleRate);
+                if (startSample + fftSize > channelData.length) break;
+                
+                // 簡易FFT（ハミング窓適用による周波数分解）
+                let spectrum = new Float32Array(fftSize / 2);
+                for (let i = 0; i < fftSize / 2; i++) {
+                    const windowVal = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (fftSize - 1));
+                    spectrum[i] = Math.abs(channelData[startSample + i] * windowVal);
+                }
+
+                let bands = new Array(bandCount).fill(0);
+                let counts = new Array(bandCount).fill(0);
+                
+                // 入力された開始・終了周波数の範囲内だけで対数マッピング
+                for (let i = 0; i < fftSize / 2; i++) {
+                    const currentHz = (i * sampleRate) / fftSize;
+                    if (currentHz < minHz || currentHz > maxHz) continue;
+                    
+                    const logMin = Math.log2(minHz);
+                    const logMax = Math.log2(maxHz);
+                    const logCurrent = Math.log2(currentHz);
+                    
+                    let bandIdx = Math.floor(((logCurrent - logMin) / (logMax - logMin)) * bandCount);
+                    if (bandIdx < 0) bandIdx = 0;
+                    if (bandIdx > bandCount - 1) bandIdx = bandCount - 1;
+                    
+                    bands[bandIdx] += spectrum[i];
+                    counts[bandIdx]++;
+                }
+                
+                let frameAvgs = [];
+                for(let b = 0; b < bandCount; b++) {
+                    let avg = counts[b] > 0 ? (bands[b] / counts[b]) : 0;
+                    frameAvgs.push(avg);
+                    if (avg > globalMaxRaw) globalMaxRaw = avg;
+                }
+                rawFrames.push(frameAvgs);
+            }
+
+            // 絶対最大値を基準に、指定高さに収まるように100%安全に正規化
+            let preCalculatedMatrix = [];
+            for (let f = 0; f < rawFrames.length; f++) {
+                let frameNums = [];
+                for (let b = 0; b < bandCount; b++) {
+                    let rawVal = rawFrames[f][b];
+                    let norm = rawVal / globalMaxRaw;
+                    if (norm > 1) norm = 1;
+
+                    // 聴覚に合わせたダイナミックレンジ補正
+                    let boosted = Math.log1p(norm * 1.718) / Math.log1p(1.718); 
+                    let num = Math.round(boosted * targetMax);
+                    
+                    // 高音の落ち込みを滑らかにサポート
+                    if (b > bandCount / 2) {
+                        num = Math.round(num * (1 + (b - bandCount / 2) * (0.1 / bandCount)));
+                    }
+                    
+                    if (num < 0) num = 0;
+                    if (num > targetMax) num = targetMax;
+                    
+                    frameNums.push(num);
+                }
+                preCalculatedMatrix.push(frameNums);
+            }
+
+            // ずっと無音の列を検出してカット
+            let activeBandIndices = []; 
+            for (let b = 0; b < bandCount; b++) {
+                let isAlwaysZero = true;
+                for (let f = 0; f < preCalculatedMatrix.length; f++) {
+                    if (preCalculatedMatrix[f][b] > 0) {
+                        isAlwaysZero = false; 
+                        break;
+                    }
+                }
+                if (!isAlwaysZero) activeBandIndices.push(b);
+            }
+
+            if (activeBandIndices.length === 0) activeBandIndices.push(0);
+
+            const finalChCount = activeBandIndices.length; 
+            const cutCount = bandCount - finalChCount;      
+
+            let output = [];
+            for (let f = 0; f < preCalculatedMatrix.length; f++) {
+                let lineData = [];
+                for (let i = 0; i < activeBandIndices.length; i++) {
+                    let realBandIdx = activeBandIndices[i];
+                    lineData.push(preCalculatedMatrix[f][realBandIdx]);
+                }
+                
+                // 【★ここに修正を適用】
+                // ベースとなるV4ビジュアライザーのデータを一切変えずに、
+                // 1行分の配列（x軸に並ぶデータ群）だけをここで綺麗に逆順にします。
+                lineData.reverse();
+                
+                output.push(lineData.join('/') + '/');
+            }
+
+            const finalResultText = output.join('\n');
+
+            const now = new Date();
+            const year = now.getFullYear();
+            const month = (now.getMonth() + 1).toString().padStart(2, '0');
+            const date = now.getDate().toString().padStart(2, '0');
+            const timeStr = now.getHours().toString().padStart(2, '0') + 
+                            now.getMinutes().toString().padStart(2, '0') + 
+                            now.getSeconds().toString().padStart(2, '0');
+            
+            const uniqueFileName = `${baseFileName}_V4VizReversed_Max${targetMax}_${finalChCount}ch_${year}${month}${date}_${timeStr}.txt`;
+
+            const blob = new Blob([finalResultText], { type: 'text/plain' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = uniqueFileName;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            
+            statusDiv.style.color = "#27ae60";
+            statusDiv.innerText = `✅ 変換完了！[ ${finalChCount} 分割 ] で保存しました！`;
+        } catch (err) {
+            console.error(err);
+            statusDiv.style.color = "#c0392b";
+            statusDiv.innerText = "❌ エラー：音声データの解析に失敗しました。";
+        } finally {
+            startBtn.disabled = false;
+        }
+    });
+};
+</script>
+
+</body>
+</html>
