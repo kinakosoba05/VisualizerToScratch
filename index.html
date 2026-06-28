@@ -19,7 +19,7 @@
 <body>
 
 <div class="box">
-    <h2>🎛️ Scratch用 フーリエ変換プロツール (V4.3 純粋FPS同期版)</h2>
+    <h2>🎛️ Scratch用 フーリエ変換プロツール (V4.3.1 行数統一版)</h2>
     <p>パラメータを設定し、音楽ファイルを選択して「開始」を押してください。</p>
     
     <div class="setting-group">
@@ -53,12 +53,11 @@
     <div id="status" style="color: #333;">ファイルを選択してボタンを押してください</div>
     
     <div class="info">
-        ★純粋FPS同期アップデート：元コード「V4.2」の良質なロジックをそのままに、計算の基準だけをFPS（フレームレート）に変更しました。
+        ★行数統一アップデート：Volumeツールとフレーム数の計算処理を厳密に統一し、書き出しデータの総行数が完全に一致するように修正しました。
     </div>
 </div>
 
 <script>
-// 元のコード（V4.2）の計算ロジックをそのまま維持
 function computeFFT(re, im) {
     const n = re.length;
     let j = 0;
@@ -125,7 +124,6 @@ window.onload = function() {
             
             statusDiv.innerText = "⏳ 3/3: 指定周波数でガチのFFT分解中...";
 
-            // FPSの設定値を取得
             const targetFPS = parseInt(paramFPS.value) || 30;
             const minHz = parseFloat(paramMinHz.value) || 10;
             const maxHz = parseFloat(paramMaxHz.value) || 6000;
@@ -133,9 +131,9 @@ window.onload = function() {
             const targetMax = parseInt(paramTargetMax.value) || 145;
 
             const sampleRate = audioBuffer.sampleRate;
-            
-            // 【純粋FPS同期】秒数の代わりに「FPSから正確に算出したサンプル歩進」を適用
             const fpsSamples = sampleRate / targetFPS;
+            
+            // 【終端処理統一】Volume側とカッチリ条件を合わせる
             const totalFrames = Math.floor(audioBuffer.length / fpsSamples);
             
             const channelData = audioBuffer.getChannelData(0);
@@ -145,16 +143,19 @@ window.onload = function() {
             let globalMaxRaw = 0.0001;
 
             for (let f = 0; f < totalFrames; f++) {
-                // フレームインデックスからサンプル位置を正確に割り出して丸め誤差を防ぐ
                 const startSample = Math.floor(f * fpsSamples);
-                if (startSample + fftSize > channelData.length) break;
+                
+                // 曲の本当に最後の最後で2048サンプル取れなくても、はみ出さないように安全ガード
+                if (startSample >= channelData.length) break;
                 
                 let re = new Float32Array(fftSize);
                 let im = new Float32Array(fftSize);
                 for (let i = 0; i < fftSize; i++) {
-                    // 元のコード（V4.2）の窓関数をそのまま維持
+                    const idx = startSample + i;
+                    // 曲の終端を超えたらゼロ埋め（これで行数を欠損させない）
+                    const val = idx < channelData.length ? channelData[idx] : 0;
                     const windowVal = 0.54 - 0.46 * Math.cos((2 * Math.PI * i) / (fftSize - 1));
-                    re[i] = channelData[startSample + i] * windowVal;
+                    re[i] = val * windowVal;
                     im[i] = 0.0;
                 }
 
@@ -252,7 +253,6 @@ window.onload = function() {
                             now.getMinutes().toString().padStart(2, '0') + 
                             now.getSeconds().toString().padStart(2, '0');
             
-            // ファイル名に設定されたFPSを追加
             const uniqueFileName = `${baseFileName}_RealFFT_${targetFPS}fps_Max${targetMax}_${finalChCount}ch_${year}${month}${date}_${timeStr}.txt`;
 
             const blob = new Blob([finalResultText], { type: 'text/plain' });
@@ -264,7 +264,7 @@ window.onload = function() {
             document.body.removeChild(link);
             
             statusDiv.style.color = "#27ae60";
-            statusDiv.innerText = `✅ 変換完了！元のロジックを崩さず、${targetFPS}FPS用に同期最適化しました！`;
+            statusDiv.innerText = `✅ 変換完了！[ ${finalChCount} 分割 ] 合計 ${output.length} 行で保存しました！`;
         } catch (err) {
             console.error(err);
             statusDiv.style.color = "#c0392b";
